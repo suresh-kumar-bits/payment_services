@@ -1,5 +1,5 @@
-# Multi-stage build for optimized container
-FROM python:3.11-slim AS base
+# Use Python 3.11 slim image for smaller size
+FROM python:3.11-slim
 
 # Set working directory
 WORKDIR /app
@@ -13,7 +13,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     postgresql-client \
-    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
@@ -37,7 +36,7 @@ EXPOSE 8082
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8082/health || exit 1
+    CMD python -c "import requests; requests.get('http://localhost:8082/health')" || exit 1
 
 # Run database setup and then start the application
 CMD ["sh", "-c", "python database_setup.py && python app.py"]

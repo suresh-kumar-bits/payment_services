@@ -1,618 +1,279 @@
-# Payment Service - Deployment Documentation
+# Payment Service
 
-## Project Overview
-**Service Name**: Payment Service  
-**Port**: 8082  
-**Database**: PostgreSQL 15  
-**Framework**: Flask (Python)  
-**Container**: Docker  
-**Orchestration**: Docker Compose / Kubernetes  
+This repository implements a lightweight Payment Service built using Flask. It provides endpoints to charge payments for completed trips, list and query payments, process refunds, and produce receipts and metrics. The project includes a small in-memory rate limiter, idempotency support backed by a PostgreSQL table, and a Dockerfile + docker-compose setup for easy local deployment.
 
 ---
 
-## Table of Contents
-1. [Prerequisites](#prerequisites)
-2. [Project Structure](#project-structure)
-3. [Local Development Deployment](#local-development-deployment)
-4. [Docker Deployment](#docker-deployment)
-5. [API Endpoints](#api-endpoints)
-6. [Database Schema](#database-schema)
-7. [Inter-Service Communication](#inter-service-communication)
-8. [Monitoring & Health Checks](#monitoring--health-checks)
-9. [Kubernetes Deployment](#kubernetes-deployment)
-10. [Troubleshooting](#troubleshooting)
-11. [Testing Guide](#testing-guide)
-12. [Environment Variables](#environment-variables)
+## Quick summary
+
+- Language: Python 3.11
+- Framework: Flask
+- DB: PostgreSQL (schema and initial data loader provided in `database_setup.py`)
+- Containerization: Docker + docker-compose
+- Testing: `pytest` (test files may be present in `tests/`)
 
 ---
 
-## Prerequisites
+## Repository layout
 
-### Required Software
-- **Docker**: Version 20.10 or higher
-- **Docker Compose**: Version 2.0 or higher
-- **Python**: Version 3.11 or higher (for local development)
-- **PostgreSQL Client**: For database operations
-- **Git**: For version control
-- **Make**: For automation (optional but recommended)
+- `app.py` - Flask application factory and main entrypoint.
+- `config.py` - Centralized configuration loaded from environment variables (.env supported via python-dotenv).
+- `database_setup.py` - Creates schema and loads `rhfd_payments.csv` into the `payments` table.
+- `Dockerfile`, `docker-compose.yml` - Container images and compose orchestration for local setup.
+- `requirements.txt` - Python dependencies.
 
-### Installation Commands
+Folders
 
-#### Windows (using PowerShell as Administrator):
-```powershell
-# Install Chocolatey (if not installed)
-Set-ExecutionPolicy Bypass -Scope Process -Force
-[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+- `api/`
+  - `routes/` - Flask Blueprints for `health`, `payments`, and `metrics`.
+  - `middleware/` - Error handlers and a simple in-memory rate limiter.
 
-# Install required tools
-choco install docker-desktop
-choco install make
-choco install python
-choco install git
-```
+- `services/`
+  - `payment_service.py` - Core business logic: calculate fares, create payments, refunds, receipts, metrics.
+  - `idempotency_service.py` - Idempotency key handling and persistence in the `idempotency_keys` table.
+  - `external_services.py` - Inter-service HTTP helpers and a payment gateway simulator.
 
-#### macOS:
-```bash
-# Install Homebrew (if not installed)
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+- `database/`
+  - `connection.py` - Database connection helper and context manager.
 
-# Install required tools
-brew install --cask docker
-brew install make
-brew install python@3.11
-brew install postgresql
-brew install git
-```
+- `utils/`
+  - `helpers.py` - Various small helper functions (formatting, validation, reference generation).
+  - `logger.py` - Structured JSON logging (or simple formatter in DEBUG).
 
-#### Linux (Ubuntu/Debian):
-```bash
-# Update package list
-sudo apt update
-
-# Install required tools
-sudo apt install docker.io docker-compose
-sudo apt install make
-sudo apt install python3.11 python3-pip
-sudo apt install postgresql-client
-sudo apt install git
-```
+- `models/` - (empty or project-specific models if present)
+- `tests/` - Unit/integration tests (if present).
+- `rhfd_payments.csv` - Example payment data loader used by `database_setup.py`.
 
 ---
 
-## Project Structure
+## Configuration
 
-```
-payment-service/
-├── app.py                    # Main Flask application
-├── database_setup.py         # Database initialization script
-├── requirements.txt          # Python dependencies
-├── Dockerfile               # Container definition
-├── docker-compose.yml       # Service orchestration
-├── .env                     # Environment variables
-├── Makefile                 # Automation commands
-├── wait-for-postgres.sh     # Database wait script
-├── rhfd_payments.csv        # Seed data
-├── k8s/                     # Kubernetes manifests (optional)
-│   ├── deployment.yaml
-│   ├── service.yaml
-│   ├── configmap.yaml
-│   └── secret.yaml
-├── tests/                   # Test files
-│   └── test_api.py
-├── logs/                    # Application logs
-└── backups/                 # Database backups
-```
+`config.py` centralizes configuration and reads environment variables. Important variables:
 
----
+- `SERVICE_PORT` (default 8082)
+- `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASS` (used by `database_setup.py` and `database/connection.py`)
+- `TRIP_SERVICE_URL`, `NOTIFICATION_SERVICE_URL`, `RIDER_SERVICE_URL`, `DRIVER_SERVICE_URL` (URLs for inter-service calls)
+- `RATE_LIMIT_ENABLED`, `RATE_LIMIT_DEFAULT`, `RATE_LIMIT_CHARGE`, `RATE_LIMIT_REFUND`
+- Business rules: `BASE_FARE`, `RATE_PER_KM`, `SURGE_MULTIPLIERS`, `CANCELLATION_FEE`
+- `IDEMPOTENCY_KEY_TTL` (seconds)
 
-## Local Development Deployment
+There is also `Config.get_database_uri()` helper for a DB URI string.
 
-### Step 1: Clone Repository
-```bash
-# Clone your repository
-git clone <your-repository-url>
-cd payment_service
-```
+You can provide these via a `.env` file or environment variables. Example `.env`:
 
-### Step 2: Set Up Environment
-```bash
-# Copy environment template
-cp .env.example .env
-
-# Edit .env file with your configurations
-nano .env  # or use any text editor
-```
-
-### Step 3: Install Dependencies (for local development)
-```bash
-# Create virtual environment
-python -m venv venv
-
-# Activate virtual environment
-# On Windows:
-.\venv\Scripts\activate
-# On macOS/Linux:
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-### Step 4: Run Locally (without Docker)
-```bash
-# Start PostgreSQL locally
-# Make sure PostgreSQL is running on port 5433
-
-# Run database setup
-python database_setup.py
-
-# Start the Flask application
-python app.py
-```
-
----
-
-## Docker Deployment
-
-### Method 1: Using Make Commands (Recommended)
-
-```bash
-# Initial setup
-make setup
-
-# Build Docker images
-make build
-
-# Start all services
-make up
-
-# Verify deployment
-make health
-
-# View logs
-make logs
-```
-
-### Method 2: Using Docker Compose Directly
-
-```bash
-# Create Docker network
-docker network create ride-hailing-network
-
-# Build images
-docker-compose build
-
-# Start services in detached mode
-docker-compose up -d
-
-# Verify services are running
-docker-compose ps
-
-# Check service health
-curl http://localhost:8082/health
-
-# View logs
-docker-compose logs -f
-```
-
-### Method 3: Step-by-Step Manual Deployment
-
-```bash
-# 1. Create network for inter-service communication
-docker network create ride-hailing-network
-
-# 2. Start PostgreSQL database
-docker run -d \
-  --name payment-postgres \
-  --network ride-hailing-network \
-  -e POSTGRES_USER=postgres \
-  -e POSTGRES_PASSWORD=Superb#915 \
-  -e POSTGRES_DB=postgres \
-  -p 5433:5433 \
-  postgres:15-alpine
-
-# 3. Wait for database to be ready (30 seconds)
-sleep 30
-
-# 4. Build Payment Service image
-docker build -t payment-service:latest .
-
-# 5. Run Payment Service
-docker run -d \
-  --name payment-service-api \
-  --network ride-hailing-network \
-  -e DB_HOST=payment-postgres \
-  -e DB_PORT=5433 \
-  -e DB_NAME=postgres \
-  -e DB_USER=postgres \
-  -e DB_PASS=Superb#915 \
-  -p 8082:8082 \
-  payment-service:latest
-
-# 6. Initialize database
-docker exec payment-service-api python database_setup.py
-
-# 7. Verify deployment
-curl http://localhost:8082/health
-```
+SERVICE_PORT=8082
+DB_HOST=localhost
+DB_PORT=5433
+DB_NAME=postgres
+DB_USER=postgres
+DB_PASS=Superb#915
+DEBUG=true
 
 ---
 
 ## API Endpoints
 
-### Base URL
-```
-http://localhost:8082
-```
+Base URL prefix: `/` (root) and `/v1` for payment-related endpoints.
 
-### Available Endpoints
+1) Root
+- GET `/` - Service info summary (service, version, endpoints)
 
-#### 1. Health Check
-```bash
-GET /health
+2) Health & readiness
+- GET `/health` - Health checks (DB connectivity and placeholders for dependencies). Returns 200 or 503 depending on DB.
+- GET `/ready` - Readiness probe (checks DB). Returns 200 if ready.
+- GET `/live` - Liveness probe (simple alive check).
 
-curl http://localhost:8082/health
-```
+3) Payments (Blueprint mounted at `/v1`)
 
-#### 2. List Payments
-```bash
-GET /v1/payments
-Parameters: trip_id, status, method, limit, offset
+- GET `/v1/payments` - List payments with optional query parameters:
+  - `trip_id` (int)
+  - `status` (string)
+  - `method` (string)
+  - `limit` (int, default 100)
+  - `offset` (int, default 0)
 
-curl "http://localhost:8082/v1/payments?status=SUCCESS&limit=10"
-```
+  Response: JSON { payments: [...], count: N, limit, offset }
 
-#### 3. Get Payment by ID
-```bash
-GET /v1/payments/{payment_id}
+- GET `/v1/payments/<payment_id>` - Get a single payment by numeric ID. 404 if not found.
 
-curl http://localhost:8082/v1/payments/1
-```
+- POST `/v1/payments/charge` - Process a payment (idempotent). Example request body:
 
-#### 4. Process Payment (Idempotent)
-```bash
-POST /v1/payments/charge
-Body: {
-  "idempotency_key": "unique-key-123",
-  "trip_id": 1,
-  "method": "CARD",
-  "rider_id": 101,
-  "driver_id": 201
-}
-
-curl -X POST http://localhost:8082/v1/payments/charge \
-  -H "Content-Type: application/json" \
-  -d '{
-    "idempotency_key": "test-payment-001",
-    "trip_id": 1,
+  {
+    "idempotency_key": "unique-key-123",
+    "trip_id": 123,
     "method": "CARD",
-    "rider_id": 101,
-    "driver_id": 201
-  }'
-```
+    "rider_id": 456,
+    "driver_id": 789
+  }
 
-#### 5. Process Refund
-```bash
-POST /v1/payments/{payment_id}/refund
-Body: {
-  "idempotency_key": "refund-key-123",
-  "amount": 50.00
-}
+  Behavior:
+  - Validates idempotency: hashed key is checked against `idempotency_keys` table. If present and valid, cached response returned.
+  - Validates trip completion via `ExternalServices.validate_trip_completion` (calls `TRIP_SERVICE_URL` or returns mock in DEBUG).
+  - Calculates fare using `PaymentService.calculate_fare()` or uses provided amount.
+  - Calls `ExternalServices.simulate_payment_gateway()` (simulates gateway) and persists the payment in `payments` table.
+  - Stores idempotency response record.
+  - Triggers `ExternalServices.send_payment_notification()` (best-effort; failures are logged but don't fail the payment).
 
-curl -X POST http://localhost:8082/v1/payments/1/refund \
-  -H "Content-Type: application/json" \
-  -d '{
-    "idempotency_key": "refund-001",
-    "amount": 50.00
-  }'
-```
+  Returns 201 for SUCCESS, 202 for PENDING/FAILED-like outcomes, or 400/500 for errors.
 
-#### 6. Generate Receipt
-```bash
-GET /v1/payments/{payment_id}/receipt
+- POST `/v1/payments/<payment_id>/refund` - Request a refund for an existing payment.
+  - Optional `idempotency_key` in body; otherwise a generated key is used for refund operations.
+  - Validates payment exists and is `SUCCESS` before refunding.
+  - Returns refund details JSON.
 
-curl http://localhost:8082/v1/payments/1/receipt
-```
+- GET `/v1/payments/<payment_id>/receipt` - Generate or fetch a receipt for a payment. Stores receipt JSON into `payment_receipts`.
 
-#### 7. Get Metrics
-```bash
-GET /metrics
-
-curl http://localhost:8082/metrics
-```
+4) Metrics
+- GET `/metrics` - Returns JSON metrics (payments by status, by method, avg amount, total revenue).
+- GET `/metrics/prometheus` - Returns Prometheus-formatted plain text metrics.
 
 ---
 
-## Database Schema
+## Database schema (high level)
 
-### Connect to Database
-```bash
-# Using Docker
-docker exec -it payment-postgres psql -U postgres -d postgres
+`database_setup.py` creates the following tables:
+- `payments` (payment_id PK, trip_id, amount, method, status, reference, created_at, updated_at)
+- `idempotency_keys` (key_hash PK, request_path, response_status, response_data JSONB, expires_at)
+- `payment_refunds` (refund_id PK, payment_id FK -> payments, refund_amount, reason, status)
+- `payment_receipts` (receipt_id PK, payment_id FK, receipt_number unique, receipt_data JSONB, generated_at)
 
-# Using Make
-make db-shell
-```
+There are simple indexes on frequently queried columns like `created_at`, `status`, and `trip_id`.
 
-### Tables Structure
-
-```sql
--- View all tables
-\dt
-
--- Payments table structure
-\d payments
-
--- Sample queries
-SELECT COUNT(*) FROM payments;
-SELECT * FROM payments WHERE status = 'SUCCESS' LIMIT 5;
-SELECT method, COUNT(*) FROM payments GROUP BY method;
-```
+`database_setup.py` also supports loading initial records from `rhfd_payments.csv`.
 
 ---
 
-## Inter-Service Communication
+## Rate limiting
 
-### Configure Service URLs
-Edit `.env` file:
-```bash
-TRIP_SERVICE_URL=http://trip-service:8081
-DRIVER_SERVICE_URL=http://driver-service:8080
-RIDER_SERVICE_URL=http://rider-service:8079
-NOTIFICATION_SERVICE_URL=http://notification-service:8084
-```
+A lightweight in-memory rate limiter is implemented in `api/middleware/rate_limiter.py`.
+- The `@rate_limit(max_calls=50, time_window=60)` decorator is used for the charge endpoint.
+- It's a per-process in-memory store using `request.remote_addr` as the key.
 
-### Testing Inter-Service Communication
-```bash
-# Ensure all services are on the same network
-docker network inspect ride-hailing-network
-
-# Test connectivity from Payment Service
-docker exec payment-service-api ping trip-service
-```
+Note: This in-memory approach does not scale across multiple instances; use Redis or another store for production.
 
 ---
 
-## Monitoring & Health Checks
+## Idempotency
 
-### Health Check Endpoints
-```bash
-# Service health
-curl http://localhost:8082/health
-
-# Database health (included in service health)
-# Metrics
-curl http://localhost:8082/metrics
-```
-
-### View Logs
-```bash
-# All logs
-docker-compose logs
-
-# Payment service logs only
-docker-compose logs payment_api
-
-# Follow logs in real-time
-docker-compose logs -f payment_api
-```
-
-### Monitoring with Prometheus (Optional)
-```yaml
-# Add to docker-compose.yml
-prometheus:
-  image: prom/prometheus:latest
-  volumes:
-    - ./prometheus.yml:/etc/prometheus/prometheus.yml
-  ports:
-    - "9090:9090"
-```
+Idempotency keys are hashed using SHA-256 and persisted in the `idempotency_keys` table and used to short-circuit repeated requests. TTL defaults to 24 hours and can be configured via `IDEMPOTENCY_KEY_TTL`.
 
 ---
 
-## Kubernetes Deployment
+## Logging
 
-### Prerequisites
-```bash
-# Install Minikube
-brew install minikube  # macOS
-choco install minikube  # Windows
-
-# Start Minikube
-minikube start
-
-# Verify cluster
-kubectl cluster-info
-```
-
-### Deploy to Kubernetes
-```bash
-# Create namespace
-kubectl create namespace ride-hailing
-
-# Apply configurations
-kubectl apply -f k8s/ -n ride-hailing
-
-# Verify deployment
-kubectl get pods -n ride-hailing
-kubectl get services -n ride-hailing
-
-# Port forward to access service
-kubectl port-forward -n ride-hailing service/payment-service 8082:8082
-```
+`utils/logger.py` exposes `get_logger(name)` which uses JSON logging in non-DEBUG mode and a human-friendly formatter in DEBUG. Log level is controlled by `LOG_LEVEL` in `config.py`.
 
 ---
 
-## Troubleshooting
+## External dependencies and integration points
 
-### Common Issues and Solutions
+- Trip Service: `TRIP_SERVICE_URL` used to validate trip completion before charging.
+- Notification Service: `NOTIFICATION_SERVICE_URL` for sending a post-payment notification.
+- Rider / Driver services: endpoints configured via `RIDER_SERVICE_URL` and `DRIVER_SERVICE_URL` used by `external_services.py`.
 
-#### 1. Database Connection Failed
-```bash
-# Check if database is running
-docker ps | grep postgres
+In DEBUG mode, the `ExternalServices.validate_trip_completion()` will return mock completed trip data if the trip service is unreachable.
 
-# Check database logs
-docker logs payment-postgres
+---
 
-# Test connection manually
-docker exec payment-postgres pg_isready -U postgres
+## Running locally (development) - Windows PowerShell
 
-# Solution: Restart database
-docker-compose restart payment_db
+Prerequisites:
+- Docker & Docker Compose (for containerized environment)
+- Python 3.11 (if running locally without Docker)
+
+1) Using Docker Compose (recommended for parity)
+
+Open PowerShell in repository root and run:
+
+```powershell
+# Build and start postgres + payment service
+docker compose up --build
 ```
 
-#### 2. Port Already in Use
-```bash
-# Find process using port 8082
-lsof -i :8082  # macOS/Linux
-netstat -ano | findstr :8082  # Windows
+This will:
+- Start a `postgres:15-alpine` container with DB port mapped to host 5433.
+- Build the payment service image and start the API at host port 8082.
 
-# Kill the process or change port in .env
-```
+Health checks are configured in the `docker-compose.yml` for both containers.
 
-#### 3. Import Error in Python
-```bash
-# Ensure all dependencies are installed
+2) Local (without Docker) - fast iteration
+
+Create virtualenv and install deps:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-
-# If using Docker, rebuild image
-docker-compose build --no-cache payment_api
 ```
 
-#### 4. Idempotency Key Error
-```bash
-# Clear idempotency keys table
-docker exec payment-postgres psql -U postgres -d postgres \
-  -c "DELETE FROM idempotency_keys WHERE expires_at < NOW();"
+If you don't have PostgreSQL running on host: start a local Postgres instance (or change `DB_HOST`/`DB_PORT` to point to your DB). The `database_setup.py` expects DB reachable using values in `config.py` / env.
+
+Run DB setup and start the app:
+
+```powershell
+python database_setup.py
+python app.py
 ```
 
-#### 5. Service Not Responding
-```bash
-# Check container status
-docker-compose ps
-
-# Restart services
-docker-compose restart
-
-# Check for errors in logs
-docker-compose logs payment_api | grep ERROR
-```
+The service will be available at: http://localhost:8082
 
 ---
 
-## Testing Guide
+## Running tests
 
-### Run Automated Tests
-```bash
-# Using Make
-make test-api
+If the repository includes tests in `tests/`, run them with pytest. Note: tests may assume a running database or use mocks.
 
-# Manual testing with curl
-./test_payment_api.sh
+```powershell
+# activate your venv then
+pytest -q
 ```
 
-### Sample Test Script
-Create `test_payment_api.sh`:
-```bash
-#!/bin/bash
-
-echo "Testing Payment Service API..."
-
-# Health check
-echo "1. Health Check:"
-curl -s http://localhost:8082/health | python -m json.tool
-
-# Get payments
-echo -e "\n2. Get Payments:"
-curl -s http://localhost:8082/v1/payments?limit=5 | python -m json.tool
-
-# Process payment
-echo -e "\n3. Process Payment:"
-curl -s -X POST http://localhost:8082/v1/payments/charge \
-  -H "Content-Type: application/json" \
-  -d '{
-    "idempotency_key": "test-'$(date +%s)'",
-    "trip_id": 1,
-    "method": "CARD"
-  }' | python -m json.tool
-```
+If tests require database, ensure DB is available or adapt tests to use SQLite/mocks.
 
 ---
 
-## Environment Variables
+## Docker specifics
 
-### Complete List
-| Variable | Default | Description |
-|----------|---------|-------------|
-| DB_HOST | localhost | Database host |
-| DB_PORT | 5433 | Database port |
-| DB_NAME | postgres | Database name |
-| DB_USER | postgres | Database user |
-| DB_PASS | Superb#915 | Database password |
-| SERVICE_PORT | 8082 | API port |
-| TRIP_SERVICE_URL | http://localhost:8081 | Trip service URL |
-| LOG_LEVEL | INFO | Logging level |
-| RATE_LIMIT_ENABLED | true | Enable rate limiting |
+- `Dockerfile` uses `python:3.11-slim`, installs dependencies, copies code, and runs `database_setup.py` before `app.py`.
+- The container runs as a non-root user `paymentservice` (UID 1000).
+- `docker-compose.yml` binds the Postgres container to host port 5433 and maps service to 8082.
+
+Notes:
+- The `Dockerfile` healthcheck uses `requests` inside the container to hit `/health`.
+- `docker-compose` sets DB envs for the API so it points to the `payment_db` service name as host.
 
 ---
 
-## Backup and Recovery
+## Security & Production considerations
 
-### Create Backup
-```bash
-make db-backup
-# or
-docker exec payment-postgres pg_dump -U postgres postgres > backup.sql
-```
-
-### Restore from Backup
-```bash
-make db-restore
-# or
-cat backup.sql | docker exec -i payment-postgres psql -U postgres postgres
-```
+- Secrets: `DB_PASS` and `POSTGRES_PASSWORD` are stored as plaintext env vars in `docker-compose.yml` for convenience. Use secrets management (Docker secrets, Vault, env injection) in production.
+- Rate limiter: in-memory and not suitable for multi-instance deployments. Replace with Redis-based limiter (e.g., `limits`, `redis-py`, `flask-limiter`).
+- Idempotency storage: currently in Postgres. That's acceptable; ensure proper indexing and pruning (cleanup job uses TTL).
+- Observability: Structured logging is implemented. Add proper tracing (OpenTelemetry) and push metrics to Prometheus.
+- Resilience: External services are called synchronously; consider async or retries with backoff for production.
 
 ---
 
-## Production Considerations
+## Known limitations & next steps
 
-1. **Security**:
-   - Change default passwords
-   - Use secrets management
-   - Enable TLS/SSL
-   - Implement proper authentication
-
-2. **Performance**:
-   - Add caching (Redis)
-   - Optimize database queries
-   - Implement connection pooling
-   - Use production WSGI server (Gunicorn)
-
-3. **Monitoring**:
-   - Set up Prometheus/Grafana
-   - Configure alerting
-   - Implement distributed tracing
-   - Centralized logging (ELK stack)
-
-4. **Scaling**:
-   - Horizontal scaling with Kubernetes
-   - Database replication
-   - Load balancing
-   - Circuit breakers for external services
+- Rate limiter is process-local — use a central store for distributed rate limits.
+- No authentication or authorization implemented for endpoints — add JWT or API keys as required.
+- No migration framework (e.g., Alembic). Consider adding migrations instead of `DROP/CREATE` in `database_setup.py` for production.
+- No background job system for retries or notification delivery (e.g., Celery, RQ).
+- Add integration tests that spin up a docker-compose test environment and run end-to-end flows.
 
 ---
 
-## Contact & Support
+## Contact & developer notes
 
-For issues or questions about the Payment Service deployment:
-- Check logs: `docker-compose logs payment_api`
-- Review this documentation
-- Contact the development team
+- To change default ports or DB settings, modify environment variables or `config.py`.
+- The `rhfd_payments.csv` file is used as the seed dataset for development.
+- For debugging, set `DEBUG=true` in the environment or `.env` to enable friendly logging and mock fallback in `ExternalServices`.
 
 ---
 
-**Document Version**: 1.0.0  
-**Last Updated**: October 2024  
-**Service Version**: 1.0.0
+If you'd like, I can:
+- Add a short Postman collection or OpenAPI spec for the endpoints.
+- Add a small `Makefile` or PowerShell script with common commands (start, stop, setup-db, test).
+- Implement a Redis-based rate limiter and a simple health-check retry mechanism for external calls.
+

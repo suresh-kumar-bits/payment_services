@@ -11,12 +11,9 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: Superb#915
     ports:
-      - "5433:5433"
+      - "5433:5432"  # Map host port 5433 to container port 5432
     volumes:
-      # Data persistence
       - payment_db_data:/var/lib/postgresql/data
-      # Initial setup scripts (optional)
-      - ./init-scripts:/docker-entrypoint-initdb.d
     networks:
       - payment-network
     healthcheck:
@@ -39,76 +36,37 @@ services:
         condition: service_healthy
     environment:
       # Database connection
-      DB_HOST: payment_db
-      DB_PORT: 5433
+      DB_HOST: payment_db  # Use container name for internal network
+      DB_PORT: 5432        # Internal port (not 5433)
       DB_NAME: postgres
       DB_USER: postgres
       DB_PASS: Superb#915
-      # Inter-service URLs (update these based on your setup)
-      TRIP_SERVICE_URL: ${TRIP_SERVICE_URL:-http://trip-service:8081}
-      NOTIFICATION_SERVICE_URL: ${NOTIFICATION_SERVICE_URL:-http://notification-service:8084}
+      # Service configuration
+      SERVICE_PORT: 8082
+      DEBUG: "true"
+      # Inter-service URLs (update when other services are running)
+      TRIP_SERVICE_URL: http://host.docker.internal:8081
+      NOTIFICATION_SERVICE_URL: http://host.docker.internal:8084
       # Python environment
       PYTHONUNBUFFERED: 1
     volumes:
-      # Mount source code for development (remove in production)
+      # Mount source code for development
       - ./:/app
       # Mount CSV file
       - ./rhfd_payments.csv:/app/rhfd_payments.csv
     networks:
       - payment-network
-      - ride-hailing-network  # Shared network for inter-service communication
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8082/health"]
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8082/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
 
-  # Adminer for database management (optional, for development)
-  payment_adminer:
-    image: adminer:latest
-    container_name: payment-adminer
-    restart: unless-stopped
-    ports:
-      - "8083:8080"
-    environment:
-      ADMINER_DEFAULT_SERVER: payment_db
-    networks:
-      - payment-network
-    depends_on:
-      - payment_db
-    profiles:
-      - debug
-
-  # Redis for caching (optional enhancement)
-  payment_redis:
-    image: redis:7-alpine
-    container_name: payment-redis
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    volumes:
-      - payment_redis_data:/data
-    networks:
-      - payment-network
-    command: redis-server --appendonly yes
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    profiles:
-      - with-cache
-
 networks:
   payment-network:
     driver: bridge
-  ride-hailing-network:
-    external: true
-    name: ride-hailing-network
 
 volumes:
   payment_db_data:
-    driver: local
-  payment_redis_data:
     driver: local
