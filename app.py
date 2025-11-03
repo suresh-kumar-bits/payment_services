@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import Config
 from utils.logger import get_logger
 from api.routes.health import health_bp
-from api.routes.payments import payments_bp
+from api.routes.payments import bp as payments_bp
 from api.routes.metrics import metrics_bp
 from api.middleware.error_handler import register_error_handlers
 

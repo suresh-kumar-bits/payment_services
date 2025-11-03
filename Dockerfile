@@ -24,19 +24,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Create non-root user for security
-RUN useradd -m -u 1000 paymentservice && \
-    chown -R paymentservice:paymentservice /app
-
-# Switch to non-root user
-USER paymentservice
-
 # Expose the service port
 EXPOSE 8082
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8082/health')" || exit 1
-
 # Run database setup and then start the application
-CMD ["sh", "-c", "python database_setup.py && python app.py"]
+# Add sleep to wait for database
+CMD ["sh", "-c", "sleep 10 && python database_setup.py && python app.py"]

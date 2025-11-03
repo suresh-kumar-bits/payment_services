@@ -1,279 +1,455 @@
-# Payment Service
+# Payment Service — Integration Guide
 
-This repository implements a lightweight Payment Service built using Flask. It provides endpoints to charge payments for completed trips, list and query payments, process refunds, and produce receipts and metrics. The project includes a small in-memory rate limiter, idempotency support backed by a PostgreSQL table, and a Dockerfile + docker-compose setup for easy local deployment.
+This document explains everything your teammates need to integrate with the Payment Service. It includes quick start instructions (Docker & local), environment variables, API endpoints with request/response examples, idempotency behavior, database schema highlights, Postman guidance, expected error codes, testing notes, and troubleshooting tips.
 
----
+Use this markdown as the authoritative reference when wiring other services (Trip Service, Rider, Driver, Notification, etc.) to the Payment Service.
 
-## Quick summary
+## Table of Contents
 
-- Language: Python 3.11
-- Framework: Flask
-- DB: PostgreSQL (schema and initial data loader provided in `database_setup.py`)
-- Containerization: Docker + docker-compose
-- Testing: `pytest` (test files may be present in `tests/`)
+- [Quick Summary](#quick-summary)
+- [Run & Connect](#run--connect)
+- [Environment Variables](#environment-variables)
+- [API Endpoints](#api-endpoints)
+- [Idempotency](#idempotency)
+- [Database Schema](#database-schema)
+- [Postman Collection & Environment](#postman-collection--environment)
+- [Testing & Verification](#testing--verification)
+- [Errors & Status Codes](#errors--status-codes)
+- [Logging, Metrics & Monitoring](#logging-metrics--monitoring)
+- [Integration Tips](#integration-tips)
+- [Troubleshooting](#troubleshooting)
+- [Contact & Ownership](#contact--ownership)
+- [Quick Reference](#quick-reference)
 
----
+## Quick Summary
 
-## Repository layout
+**Service responsibility:** Create payments, store payment records, prevent duplicates using idempotency, process refunds, and send notifications asynchronously.
 
-- `app.py` - Flask application factory and main entrypoint.
-- `config.py` - Centralized configuration loaded from environment variables (.env supported via python-dotenv).
-- `database_setup.py` - Creates schema and loads `rhfd_payments.csv` into the `payments` table.
-- `Dockerfile`, `docker-compose.yml` - Container images and compose orchestration for local setup.
-- `requirements.txt` - Python dependencies.
+**Base URL** (local/default): `http://127.0.0.1:8082` (Postman collection variable: `{{base_url}}`)
 
-Folders
+**Primary endpoints:**
 
-- `api/`
-  - `routes/` - Flask Blueprints for `health`, `payments`, and `metrics`.
-  - `middleware/` - Error handlers and a simple in-memory rate limiter.
+- `POST /payments` — create a payment
+- `POST /payments/{payment_id}/refunds` — refund a payment
+- `GET /health` — service health
 
-- `services/`
-  - `payment_service.py` - Core business logic: calculate fares, create payments, refunds, receipts, metrics.
-  - `idempotency_service.py` - Idempotency key handling and persistence in the `idempotency_keys` table.
-  - `external_services.py` - Inter-service HTTP helpers and a payment gateway simulator.
+**Idempotency:** Client provides `idempotency_key` in the request body. The server hashes it and ensures only one processing flow occurs for that key.
 
-- `database/`
-  - `connection.py` - Database connection helper and context manager.
+## Run & Connect
 
-- `utils/`
-  - `helpers.py` - Various small helper functions (formatting, validation, reference generation).
-  - `logger.py` - Structured JSON logging (or simple formatter in DEBUG).
+### Docker (Recommended for Integration)
 
-- `models/` - (empty or project-specific models if present)
-- `tests/` - Unit/integration tests (if present).
-- `rhfd_payments.csv` - Example payment data loader used by `database_setup.py`.
+If the team uses Docker Compose (project `docker-compose.yml`):
 
----
-
-## Configuration
-
-`config.py` centralizes configuration and reads environment variables. Important variables:
-
-- `SERVICE_PORT` (default 8082)
-- `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASS` (used by `database_setup.py` and `database/connection.py`)
-- `TRIP_SERVICE_URL`, `NOTIFICATION_SERVICE_URL`, `RIDER_SERVICE_URL`, `DRIVER_SERVICE_URL` (URLs for inter-service calls)
-- `RATE_LIMIT_ENABLED`, `RATE_LIMIT_DEFAULT`, `RATE_LIMIT_CHARGE`, `RATE_LIMIT_REFUND`
-- Business rules: `BASE_FARE`, `RATE_PER_KM`, `SURGE_MULTIPLIERS`, `CANCELLATION_FEE`
-- `IDEMPOTENCY_KEY_TTL` (seconds)
-
-There is also `Config.get_database_uri()` helper for a DB URI string.
-
-You can provide these via a `.env` file or environment variables. Example `.env`:
-
-SERVICE_PORT=8082
-DB_HOST=localhost
-DB_PORT=5433
-DB_NAME=postgres
-DB_USER=postgres
-DB_PASS=Superb#915
-DEBUG=true
-
----
-
-## API Endpoints
-
-Base URL prefix: `/` (root) and `/v1` for payment-related endpoints.
-
-1) Root
-- GET `/` - Service info summary (service, version, endpoints)
-
-2) Health & readiness
-- GET `/health` - Health checks (DB connectivity and placeholders for dependencies). Returns 200 or 503 depending on DB.
-- GET `/ready` - Readiness probe (checks DB). Returns 200 if ready.
-- GET `/live` - Liveness probe (simple alive check).
-
-3) Payments (Blueprint mounted at `/v1`)
-
-- GET `/v1/payments` - List payments with optional query parameters:
-  - `trip_id` (int)
-  - `status` (string)
-  - `method` (string)
-  - `limit` (int, default 100)
-  - `offset` (int, default 0)
-
-  Response: JSON { payments: [...], count: N, limit, offset }
-
-- GET `/v1/payments/<payment_id>` - Get a single payment by numeric ID. 404 if not found.
-
-- POST `/v1/payments/charge` - Process a payment (idempotent). Example request body:
-
-  {
-    "idempotency_key": "unique-key-123",
-    "trip_id": 123,
-    "method": "CARD",
-    "rider_id": 456,
-    "driver_id": 789
-  }
-
-  Behavior:
-  - Validates idempotency: hashed key is checked against `idempotency_keys` table. If present and valid, cached response returned.
-  - Validates trip completion via `ExternalServices.validate_trip_completion` (calls `TRIP_SERVICE_URL` or returns mock in DEBUG).
-  - Calculates fare using `PaymentService.calculate_fare()` or uses provided amount.
-  - Calls `ExternalServices.simulate_payment_gateway()` (simulates gateway) and persists the payment in `payments` table.
-  - Stores idempotency response record.
-  - Triggers `ExternalServices.send_payment_notification()` (best-effort; failures are logged but don't fail the payment).
-
-  Returns 201 for SUCCESS, 202 for PENDING/FAILED-like outcomes, or 400/500 for errors.
-
-- POST `/v1/payments/<payment_id>/refund` - Request a refund for an existing payment.
-  - Optional `idempotency_key` in body; otherwise a generated key is used for refund operations.
-  - Validates payment exists and is `SUCCESS` before refunding.
-  - Returns refund details JSON.
-
-- GET `/v1/payments/<payment_id>/receipt` - Generate or fetch a receipt for a payment. Stores receipt JSON into `payment_receipts`.
-
-4) Metrics
-- GET `/metrics` - Returns JSON metrics (payments by status, by method, avg amount, total revenue).
-- GET `/metrics/prometheus` - Returns Prometheus-formatted plain text metrics.
-
----
-
-## Database schema (high level)
-
-`database_setup.py` creates the following tables:
-- `payments` (payment_id PK, trip_id, amount, method, status, reference, created_at, updated_at)
-- `idempotency_keys` (key_hash PK, request_path, response_status, response_data JSONB, expires_at)
-- `payment_refunds` (refund_id PK, payment_id FK -> payments, refund_amount, reason, status)
-- `payment_receipts` (receipt_id PK, payment_id FK, receipt_number unique, receipt_data JSONB, generated_at)
-
-There are simple indexes on frequently queried columns like `created_at`, `status`, and `trip_id`.
-
-`database_setup.py` also supports loading initial records from `rhfd_payments.csv`.
-
----
-
-## Rate limiting
-
-A lightweight in-memory rate limiter is implemented in `api/middleware/rate_limiter.py`.
-- The `@rate_limit(max_calls=50, time_window=60)` decorator is used for the charge endpoint.
-- It's a per-process in-memory store using `request.remote_addr` as the key.
-
-Note: This in-memory approach does not scale across multiple instances; use Redis or another store for production.
-
----
-
-## Idempotency
-
-Idempotency keys are hashed using SHA-256 and persisted in the `idempotency_keys` table and used to short-circuit repeated requests. TTL defaults to 24 hours and can be configured via `IDEMPOTENCY_KEY_TTL`.
-
----
-
-## Logging
-
-`utils/logger.py` exposes `get_logger(name)` which uses JSON logging in non-DEBUG mode and a human-friendly formatter in DEBUG. Log level is controlled by `LOG_LEVEL` in `config.py`.
-
----
-
-## External dependencies and integration points
-
-- Trip Service: `TRIP_SERVICE_URL` used to validate trip completion before charging.
-- Notification Service: `NOTIFICATION_SERVICE_URL` for sending a post-payment notification.
-- Rider / Driver services: endpoints configured via `RIDER_SERVICE_URL` and `DRIVER_SERVICE_URL` used by `external_services.py`.
-
-In DEBUG mode, the `ExternalServices.validate_trip_completion()` will return mock completed trip data if the trip service is unreachable.
-
----
-
-## Running locally (development) - Windows PowerShell
-
-Prerequisites:
-- Docker & Docker Compose (for containerized environment)
-- Python 3.11 (if running locally without Docker)
-
-1) Using Docker Compose (recommended for parity)
-
-Open PowerShell in repository root and run:
-
-```powershell
-# Build and start postgres + payment service
-docker compose up --build
+```bash
+# Build and run (from project root)
+docker-compose build
+docker-compose up -d   # -d runs in background
+docker ps              # check running containers
 ```
 
-This will:
-- Start a `postgres:15-alpine` container with DB port mapped to host 5433.
-- Build the payment service image and start the API at host port 8082.
+Check health:
 
-Health checks are configured in the `docker-compose.yml` for both containers.
+```bash
+curl http://127.0.0.1:8082/health
+```
 
-2) Local (without Docker) - fast iteration
+### Local (Development)
 
-Create virtualenv and install deps:
+Create virtualenv and install dependencies:
 
-```powershell
+```bash
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+.venv\Scripts\activate   # Windows PowerShell: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-If you don't have PostgreSQL running on host: start a local Postgres instance (or change `DB_HOST`/`DB_PORT` to point to your DB). The `database_setup.py` expects DB reachable using values in `config.py` / env.
+Set environment variables (or call `setenv.bat` if provided).
 
-Run DB setup and start the app:
+Create database and seed:
 
-```powershell
+```bash
 python database_setup.py
+```
+
+Run:
+
+```bash
 python app.py
 ```
 
-The service will be available at: http://localhost:8082
+## Environment Variables
 
----
+These are the variables your service expects (from `.env`):
 
-## Running tests
+- `DB_HOST` — Postgres host (e.g., `localhost` or `db` inside Docker)
+- `DB_PORT` — Postgres port (example: `5433`)
+- `DB_NAME` — database name
+- `DB_USER` — database user
+- `DB_PASS` — database password
+- `SERVICE_PORT` — service port (default: `8082`)
+- `TRIP_SERVICE_URL` — Trip Service URL
+- `DRIVER_SERVICE_URL` — Driver Service URL
+- `RIDER_SERVICE_URL` — Rider Service URL
+- `NOTIFICATION_SERVICE_URL` — Notification Service URL
+- `API_PREFIX` — prefix for API endpoints (e.g., `/v1` if used)
+- `IDEMPOTENCY_KEY_TTL` — TTL seconds for idempotency records (default: `86400` = 24h)
+- `ENVIRONMENT` — environment name
+- `DEBUG` — debug mode flag
+- `LOG_LEVEL` — logging level
 
-If the repository includes tests in `tests/`, run them with pytest. Note: tests may assume a running database or use mocks.
+**Note:** Do not commit credentials to VCS. Share `.env.example` (with placeholders) with the team.
 
-```powershell
-# activate your venv then
-pytest -q
+## API Endpoints
+
+Base: `{{base_url}}` (Postman collection variable). Example: `http://127.0.0.1:8082`
+
+### POST /payments
+
+Create a payment (charge a trip).
+
+**URL**
+
+```
+POST /payments
 ```
 
-If tests require database, ensure DB is available or adapt tests to use SQLite/mocks.
+**Headers**
 
----
+```
+Content-Type: application/json
+```
 
-## Docker specifics
+**Request Body**
 
-- `Dockerfile` uses `python:3.11-slim`, installs dependencies, copies code, and runs `database_setup.py` before `app.py`.
-- The container runs as a non-root user `paymentservice` (UID 1000).
-- `docker-compose.yml` binds the Postgres container to host port 5433 and maps service to 8082.
+```json
+{
+  "idempotency_key": "string_required",
+  "trip_id": 101,
+  "method": "CARD",
+  "amount": 150.00,
+  "metadata": { "note": "optional" }
+}
+```
 
-Notes:
-- The `Dockerfile` healthcheck uses `requests` inside the container to hit `/health`.
-- `docker-compose` sets DB envs for the API so it points to the `payment_db` service name as host.
+**Notes:**
 
----
+- `idempotency_key` is required and must be a non-empty string
+- `method` should be one of the allowed methods (CARD, UPI, WALLET, NETBANKING, etc.)
+- `amount` must be non-negative if provided; if not provided, the service may calculate from trip data
 
-## Security & Production considerations
+**Success Response** (HTTP 200 or 201/202)
 
-- Secrets: `DB_PASS` and `POSTGRES_PASSWORD` are stored as plaintext env vars in `docker-compose.yml` for convenience. Use secrets management (Docker secrets, Vault, env injection) in production.
-- Rate limiter: in-memory and not suitable for multi-instance deployments. Replace with Redis-based limiter (e.g., `limits`, `redis-py`, `flask-limiter`).
-- Idempotency storage: currently in Postgres. That's acceptable; ensure proper indexing and pruning (cleanup job uses TTL).
-- Observability: Structured logging is implemented. Add proper tracing (OpenTelemetry) and push metrics to Prometheus.
-- Resilience: External services are called synchronously; consider async or retries with backoff for production.
+```json
+{
+  "payment_id": 353,
+  "trip_id": 101,
+  "amount": 150.0,
+  "method": "CARD",
+  "status": "SUCCESS",
+  "reference": "PAY-20251103-xxxx",
+  "created_at": "2025-11-03T11:23:00.145775"
+}
+```
 
----
+**Pending Response** (HTTP 202)
 
-## Known limitations & next steps
+```json
+{
+  "payment_id": null,
+  "status": "PENDING",
+  "message": "Payment accepted for processing"
+}
+```
 
-- Rate limiter is process-local — use a central store for distributed rate limits.
-- No authentication or authorization implemented for endpoints — add JWT or API keys as required.
-- No migration framework (e.g., Alembic). Consider adding migrations instead of `DROP/CREATE` in `database_setup.py` for production.
-- No background job system for retries or notification delivery (e.g., Celery, RQ).
-- Add integration tests that spin up a docker-compose test environment and run end-to-end flows.
+**Conflict** (HTTP 409)
 
----
+```json
+{
+  "error": "Request with same idempotency key is already in progress"
+}
+```
 
-## Contact & developer notes
+**Bad Request** (HTTP 400)
 
-- To change default ports or DB settings, modify environment variables or `config.py`.
-- The `rhfd_payments.csv` file is used as the seed dataset for development.
-- For debugging, set `DEBUG=true` in the environment or `.env` to enable friendly logging and mock fallback in `ExternalServices`.
+```json
+{
+  "error": "Missing required fields: idempotency_key, trip_id"
+}
+```
 
----
+**Server Error** (HTTP 500)
 
-If you'd like, I can:
-- Add a short Postman collection or OpenAPI spec for the endpoints.
-- Add a small `Makefile` or PowerShell script with common commands (start, stop, setup-db, test).
-- Implement a Redis-based rate limiter and a simple health-check retry mechanism for external calls.
+```json
+{
+  "error": "Payment processing failed"
+}
+```
 
+### POST /payments/{payment_id}/refunds
+
+Create a refund for a payment.
+
+**URL**
+
+```
+POST /payments/{payment_id}/refunds
+```
+
+**Headers**
+
+```
+Content-Type: application/json
+```
+
+**Request Body**
+
+```json
+{
+  "idempotency_key": "refund-demo-1",
+  "amount": 50.00,
+  "metadata": { "reason": "user requested" }
+}
+```
+
+**Notes:**
+
+- `idempotency_key` is required for idempotency of refunds
+- `amount` is optional; if absent, the full amount is refunded
+
+**Success Response** (HTTP 200)
+
+```json
+{
+  "payment_id": 353,
+  "refund_id": 12,
+  "refund_amount": 50.0,
+  "status": "REFUNDED",
+  "timestamp": "2025-11-03T11:25:52.660094"
+}
+```
+
+**Error Responses:**
+
+- `400` — validation error (bad amount, payment not refundable, etc.)
+- `409` — refund with same idempotency key already in progress
+- `500` — server error
+
+### GET /health
+
+Basic health check.
+
+**URL**
+
+```
+GET /health
+```
+
+**Response**
+
+```json
+{
+  "status": "healthy",
+  "service": "payment-service",
+  "version": "1.0.0"
+}
+```
+
+(You may also have `/v1/health` depending on `API_PREFIX`.)
+
+## Idempotency
+
+**Where:** Client must send `idempotency_key` in the request body (both for create-payment and refunds).
+
+**Hashing:** Server computes a deterministic hash (SHA-256 hex) of the raw key and stores it.
+
+**Claiming:** On first request for a key, the server atomically inserts an idempotency row with `response_status = NULL` to indicate in-progress. This claim prevents races and duplicate charges.
+
+**Completed:** After processing, server UPDATEs the row with `response_status` (HTTP code) and `response_data` (JSON). Later requests with the same key:
+
+- If completed: server returns stored `response_data` and `response_status`
+- If in-progress: server returns 409 Conflict (client can retry after a pause)
+
+**TTL / Cleanup:** Idempotency rows have `expires_at` (e.g., 24h). A cleanup job (cron) is recommended to delete expired rows.
+
+**Client contract:** For retryable client flows, reuse the same `idempotency_key`. If you want a new payment, generate a new key.
+
+## Database Schema
+
+### Important Tables & Columns (Summary)
+
+#### payments
+
+- `payment_id` (PK) — int
+- `trip_id` — int
+- `amount` — numeric
+- `method` — varchar
+- `status` — varchar (e.g., PENDING, SUCCESS, FAILED)
+- `reference` — unique payment reference (string)
+- `idempotency_hash` — varchar (sha256 hex)
+- `created_at`, `updated_at` — timestamps
+
+#### idempotency_keys
+
+- `key_hash` (PK) — sha256 hex string
+- `request_path` — e.g., `POST:/payments`
+- `response_status` — int (HTTP)
+- `response_data` — jsonb (cached response)
+- `created_at`, `expires_at`, `updated_at` — timestamps
+
+#### payment_refunds (if present)
+
+- `refund_id` — int
+- `payment_id` (FK) — int
+- `amount` — numeric
+- `status` — varchar
+- `created_at` — timestamp
+
+**Notes:**
+
+- `idempotency_hash` in `payments` links to the idempotency row
+- `payments.reference` is unique and typically generated as `PAY-YYYYMMDD-<shorthash>`
+
+## Postman Collection & Environment
+
+Import the Payment Service - Local collection (JSON provided by the developer).
+
+Set collection variable `base_url` to `http://127.0.0.1:8082`.
+
+**Important variables:**
+
+- `idempotency_key` — set a fixed value (e.g., `demo-client-1`) to test idempotency repeatably
+- `last_payment_id` — populated automatically by the Create Payment request test script
+
+**Sharing:**
+
+- Export the collection (v2.1) and share JSON with teammates
+- Optionally export an Environment file including `base_url` and example keys
+
+## Testing & Verification
+
+Recommended workflow:
+
+1. Start all services (your service + DB) via `docker-compose up -d`
+2. Health check: `GET {{base_url}}/health`
+3. Create a payment with `idempotency_key = demo-client-1` → note `payment_id`
+4. Re-run Create Payment with same key → should return same response (no duplicate), or 409 if attempted while in-progress
+5. Request refund on `payment_id` with `idempotency_key = refund-demo-1` → check single refund created
+6. Concurrency stress: run 8 concurrent requests (same `idempotency_key`) — only one payment should be created. Use the provided `concurrency_test.py` if available
+7. Check DB: idempotency row exists and `response_status` is set; `payments` table contains one row for that idempotency hash
+
+## Errors & Status Codes
+
+- `200` — successful synchronous creation or refund result
+- `201` — (if returned) resource created
+- `202` — accepted / pending asynchronous processing
+- `400` — client validation error (bad/missing fields)
+- `409` — idempotency key in-progress (client should retry later or poll)
+- `500` — server error (generic). Server logs include stack traces (do not expose full error in production responses)
+
+**Important note:** Clients must never assume 200 means immediately charged in the gateway; check `status` field (SUCCESS, PENDING, FAILED) in response.
+
+## Logging, Metrics & Monitoring
+
+**Logs:** Printed to container stdout — view with `docker logs <container>`
+
+**Metrics endpoint** (if present): Check `/metrics` or whatever the service exposes
+
+**Health endpoint:** `GET /health` (or `/v1/health` if prefixed)
+
+**Important:** Ensure notification calls are async in the service so slow downstream services do not block payment flow.
+
+## Integration Tips
+
+**Trip Service should:**
+
+- Ensure a trip is completed before invoking `POST /payments`
+- Provide `trip_id` and optionally `amount` (or let Payment Service calculate fare)
+- Pass a deterministic `idempotency_key` (e.g., `trip-<trip_id>-charge`) to avoid duplicates
+
+**Notification Service:**
+
+- Payment Service will call it asynchronously with payload `{ payment_id, trip_id, amount, status, reference }`
+- Keep the notification endpoint idempotent as well
+
+**Rider/Driver UI:**
+
+- Should retry on 409 after a short backoff, or poll the payment status via an internal API if implemented
+
+**Secrets:**
+
+- Payment gateway keys must live in secure config / secrets manager; never hard-code in repo
+
+## Troubleshooting
+
+### Duplicate Payments on Concurrency Test
+
+**Likely cause:** Old code used SELECT before INSERT.
+
+**Fix:** Use atomic `INSERT ... ON CONFLICT DO NOTHING RETURNING` (or a DB-level claim) and UPDATE to store response after processing.
+
+### psql Connection Refused
+
+**Check:** `DB_HOST` and `DB_PORT`. In Docker Compose, DB service name is typically the host (e.g., `db`). Use `docker logs` to view DB startup errors.
+
+### Postman Shows 409 Repeatedly
+
+**Means:** Previous request still in-progress (server marked row with NULL response).
+
+**Fix:** Wait a short time and re-run; or check server logs to ensure process completed.
+
+### Response 500
+
+**Check:** Server logs for stack trace. Common issues:
+
+- DB not ready
+- Schema mismatch (run `database_setup.py`)
+- Missing env vars
+
+## Contact & Ownership
+
+**Service owner:** [Your Name] (replace with actual)
+
+**GitHub repo / path:** `payment_service/` (root)
+
+**Important files:**
+
+- `app.py` — Flask app entry
+- `api/routes/payments.py` — endpoints
+- `services/idempotency_service.py` — idempotency helpers
+- `services/payment_service.py` — business logic
+- `database_setup.py` — creates tables & seeds `rhfd_payments.csv`
+- `Dockerfile`, `docker-compose.yml` — containerization
+- `README.md` — run instructions
+
+## Quick Reference
+
+### curl — Create Payment
+
+```bash
+curl -X POST "http://127.0.0.1:8082/payments" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "idempotency_key": "demo-client-1",
+    "trip_id": 101,
+    "method": "CARD",
+    "amount": 150.00
+  }'
+```
+
+### curl — Refund
+
+```bash
+curl -X POST "http://127.0.0.1:8082/payments/353/refunds" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "idempotency_key": "refund-demo-1",
+    "amount": 50.00
+  }'
+```
+
+### Compute Idempotency Key Hash (in psql)
+
+```sql
+SELECT encode(digest('demo-client-1','sha256'),'hex') AS keyhash;
+```

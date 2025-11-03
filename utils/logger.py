@@ -3,6 +3,7 @@ import logging
 import sys
 from datetime import datetime
 import json
+from flask import request  # <-- IMPORT 'request' TO GET HEADERS
 
 class JsonFormatter(logging.Formatter):
     """JSON formatter for structured logging"""
@@ -18,6 +19,15 @@ class JsonFormatter(logging.Formatter):
             'line': record.lineno
         }
         
+        # --- THIS IS THE NEW CODE ---
+        # Add correlation ID from request header if it exists
+        try:
+            log_obj['correlation_id'] = request.headers.get('X-Correlation-ID', 'not-set')
+        except RuntimeError:
+            # This handles logs outside of a request context (e.g., app startup)
+            log_obj['correlation_id'] = 'app-startup'
+        # --- END OF NEW CODE ---
+
         if hasattr(record, 'extra'):
             log_obj.update(record.extra)
         
@@ -33,7 +43,9 @@ def get_logger(name=None):
     logger = logging.getLogger(name or __name__)
     
     if not logger.handlers:
-        logger.setLevel(getattr(logging, Config.LOG_LEVEL))
+        # Check if LOG_LEVEL is set in Config, default to INFO
+        log_level = getattr(Config, 'LOG_LEVEL', 'INFO').upper()
+        logger.setLevel(getattr(logging, log_level, logging.INFO))
         
         # Console handler
         console_handler = logging.StreamHandler(sys.stdout)

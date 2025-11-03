@@ -21,3 +21,7 @@ pytest-cov==4.1.0
 
 # Production Server (optional)
 gunicorn==21.2.0
+
+# --- ADDITIONS FOR MONITORING (Task 6) ---
+prometheus-flask-exporter==0.23.0
+python-json-logger==2.0.7
