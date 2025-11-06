@@ -365,7 +365,7 @@ GET /metrics
 
 ## ✅ Assignment Tasks Completion
 
-### **Task 1: Services (≥4) - 6 Marks**
+### **Task 1: Services (≥4)**
 ✅ **Payment Service** (this repository)
 - Endpoints: `/payments`, `/payments/{id}/refunds`, `/health`, `/metrics`
 - Inter-service calls: Trip Service, Notification Service
@@ -379,7 +379,7 @@ GET /metrics
 
 ---
 
-### **Task 2: Database Design - 1.5 Marks**
+### **Task 2: Database Design**
 
 **Schema Overview:**
 ```sql
@@ -401,7 +401,7 @@ idx_idempotency_expires
 
 ---
 
-### **Task 3: Inter-Service Communication - 2.5 Marks**
+### **Task 3: Inter-Service Communication**
 
 **Workflow: Trip Completion → Payment**
 1. **Trip Service** marks trip as COMPLETED
@@ -420,7 +420,7 @@ idx_idempotency_expires
 
 ---
 
-### **Task 4: Containerization with Docker - 2 Marks**
+### **Task 4: Containerization with Docker**
 
 **Files:**
 - ✅ `Dockerfile` - Multi-stage build for Python app
@@ -443,7 +443,7 @@ curl http://localhost:8082/health
 
 ---
 
-### **Task 5: Deployment on Minikube - 2 Marks**
+### **Task 5: Deployment on Minikube**
 
 **Kubernetes Resources Created:**
 - ✅ **Namespace:** `payment-service`
@@ -465,7 +465,7 @@ curl http://localhost:8082/health
 
 ---
 
-### **Task 6: Monitoring - 2 Marks**
+### **Task 6: Monitoring**
 
 **Metrics Implemented:**
 - ✅ `payment_total{status="SUCCESS|FAILED|PENDING"}`
@@ -491,7 +491,7 @@ prometheus.io/path: "/metrics"
 
 ---
 
-### **Task 7: Documentation - 2 Marks**
+### **Task 7: Documentation**
 
 ✅ **This README.md** covers:
 - Architecture overview
@@ -747,23 +747,6 @@ docker system prune -a
 
 ---
 
-## 🎓 Assignment Submission Checklist
-
-- [ ] All 4 services implemented (Payment + 3 others)
-- [ ] Database schema diagram created
-- [ ] Inter-service communication demonstrated
-- [ ] Docker Compose working (screenshot: `docker ps`)
-- [ ] Kubernetes deployment successful (screenshot: `kubectl get pods`)
-- [ ] Health checks passing (screenshot: `/health` response)
-- [ ] Metrics endpoint accessible (screenshot: `/metrics` response)
-- [ ] Payment creation works (screenshot: Postman request/response)
-- [ ] Documentation complete (this README)
-- [ ] Video demo recorded (max 15 minutes)
-- [ ] GitHub repository links added to PDF
-- [ ] Individual contribution percentages documented
-
----
-
 ## 📞 Support
 
 **For assignment-related queries:**
@@ -780,13 +763,3 @@ docker system prune -a
 - `api/routes/payments.py` - Payment logic
 
 ---
-
-## 📄 License
-
-This is an academic assignment project for microservices architecture course.
-
----
-
-**Last Updated:** November 2025  
-**Version:** 1.0.0  
-**Assignment:** Problem Statement 6 - Ride-Hailing Platform
