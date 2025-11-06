@@ -46,8 +46,8 @@ def create_app():
             'timestamp': datetime.utcnow().isoformat(),
             'endpoints': {
                 'health': '/health',
-                'payments': '/v1/payments',
-                'charge': '/v1/payments/charge',
+                'payments': '/payments',
+                'charge': '/payments/charge',
                 'metrics': '/metrics'
             }
         })

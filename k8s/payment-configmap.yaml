@@ -18,7 +18,7 @@ data:
   IDEMPOTENCY_KEY_TTL: "86400"
   LOG_LEVEL: "INFO"
   ENVIRONMENT: "production"
-  DEBUG: "false"
+  DEBUG: "true"
 
   # Inter-service URLs using Kubernetes service names
   TRIP_SERVICE_URL: "http://trip-service:8081"

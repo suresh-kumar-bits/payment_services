@@ -215,7 +215,8 @@ minikube image load payment_service:latest
 
 **Step 5: Verify Image**
 ```bash
-minikube image ls | grep payment
+# For Windows OS run below command
+minikube image ls | findstr payment
 # Should show: docker.io/library/payment_service:latest
 ```
 
@@ -317,7 +318,7 @@ GET /health
 
 ### **2. Create Payment**
 ```bash
-POST /v1/payments
+POST /payments
 Content-Type: application/json
 
 {
@@ -343,7 +344,7 @@ Content-Type: application/json
 
 ### **3. Create Refund**
 ```bash
-POST /v1/payments/{payment_id}/refunds
+POST /payments/{payment_id}/refunds
 Content-Type: application/json
 
 {
@@ -366,7 +367,7 @@ GET /metrics
 
 ### **Task 1: Services (≥4) - 6 Marks**
 ✅ **Payment Service** (this repository)
-- Endpoints: `/v1/payments`, `/v1/payments/{id}/refunds`, `/health`, `/metrics`
+- Endpoints: `/payments`, `/payments/{id}/refunds`, `/health`, `/metrics`
 - Inter-service calls: Trip Service, Notification Service
 - Database: PostgreSQL (independent)
 - Idempotency: SHA-256 key hashing
@@ -404,8 +405,8 @@ idx_idempotency_expires
 
 **Workflow: Trip Completion → Payment**
 1. **Trip Service** marks trip as COMPLETED
-2. **Trip Service** → **Payment Service**: `POST /v1/payments`
-3. **Payment Service** validates trip via `GET /v1/trips/{trip_id}`
+2. **Trip Service** → **Payment Service**: `POST /payments`
+3. **Payment Service** validates trip via `GET /trips/{trip_id}`
 4. **Payment Service** calculates fare: `base_fare + (distance × rate × surge)`
 5. **Payment Service** processes payment (gateway simulation)
 6. **Payment Service** → **Notification Service**: Send receipt (async)
@@ -516,7 +517,7 @@ curl http://localhost:8082/health
 docker exec -it payment-postgres psql -U postgres -c "\dt"
 
 # 4. Payment creation (use Postman)
-POST http://localhost:8082/v1/payments
+POST http://localhost:8082/payments
 ```
 
 ---
@@ -559,7 +560,7 @@ curl <URL>/health
 
 **7. Payment creation in Postman:**
 - Method: POST
-- URL: `http://127.0.0.1:xxxxx/v1/payments`
+- URL: `http://127.0.0.1:xxxxx/payments`
 - Body: (see API Endpoints section)
 - Screenshot: Request + Response
 
@@ -715,7 +716,7 @@ kubectl rollout restart deployment/payment-service -n payment-service
 URL=$(minikube service payment-service-nodeport --url -n payment-service)
 
 # Create payment
-curl -X POST "$URL/v1/payments" \
+curl -X POST "$URL/payments" \
   -H "Content-Type: application/json" \
   -d '{
     "idempotency_key": "test-001",
