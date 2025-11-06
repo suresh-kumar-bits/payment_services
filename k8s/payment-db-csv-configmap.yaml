@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: payment-db-csv
+  namespace: payment-service
+  labels:
+    app: payment-service
+data:
+  # CSV with initial payment records; mounted by the DB init job at /data/rhfd_payments.csv
+  rhfd_payments.csv: |-
+    payment_id,trip_id,amount,method,status,reference,created_at
+    1,1,99.01,CARD,FAILED,RHP20251003-LN326V,2023-10-18 22:02:52
+    2,2,64.26,CARD,FAILED,RHP20251003-FBCEVL,2024-02-20 20:45:57
+    3,3,115.86,WALLET,FAILED,RHP20251003-KIJ9NZ,2025-07-12 12:25:44
+    4,4,85.8,UPI,FAILED,RHP20251003-B2X9LY,2025-01-16 03:19:29
+    5,5,25.5,UPI,FAILED,RHP20251003-6F5JRT,2024-03-13 18:03:10
+    6,6,106.57,CASH,PENDING,RHP20251003-7O6P3V,2025-05-09 07:56:57
+    7,7,104.86,WALLET,SUCCESS,RHP20251003-71MHB2,2024-04-13 16:48:22
+    8,8,85.92,CASH,FAILED,RHP20251003-C8RTV3,2025-03-15 09:48:52
+    9,9,170.54,WALLET,PENDING,RHP20251003-9C398D,2024-01-19 03:46:59
+    10,10,245.31,WALLET,FAILED,RHP20251003-2UB5DL,2023-06-18 04:18:15
+    # (CSV truncated in manifest for readability) -- file in repo contains full dataset

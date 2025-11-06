@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-postgres
+  namespace: payment-service
+  labels:
+    app: payment-postgres
+spec:
+  type: ClusterIP
+  selector:
+    app: payment-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+      name: postgres

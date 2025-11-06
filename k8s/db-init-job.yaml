@@ -1,0 +1,35 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: payment-db-init
+  namespace: payment-service
+  labels:
+    app: payment-service
+    role: db-init
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: db-init
+          # Use the service image that contains project code and database_setup.py
+          image: payment_service:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "database_setup.py"]
+          envFrom:
+            - configMapRef:
+                name: payment-config
+            - secretRef:
+                name: payment-secret
+          volumeMounts:
+            - name: csv-data
+              mountPath: /data
+      volumes:
+        - name: csv-data
+          configMap:
+            name: payment-db-csv
+            items:
+              - key: rhfd_payments.csv
+                path: rhfd_payments.csv
+# The Job runs database_setup.py once; database_setup.py should read /data/rhfd_payments.csv when seeding.

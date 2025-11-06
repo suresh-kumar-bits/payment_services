@@ -16,7 +16,16 @@ DB_NAME = Config.DB_NAME
 DB_USER = Config.DB_USER
 DB_PASS = Config.DB_PASS
 DB_PORT = Config.DB_PORT
-PAYMENTS_CSV = "rhfd_payments.csv"
+# Allow the CSV path to be provided via environment variable so the K8s Job
+# can mount the CSV at /data/rhfd_payments.csv and set PAYMENTS_CSV_PATH.
+PAYMENTS_CSV = os.getenv('PAYMENTS_CSV_PATH', 'rhfd_payments.csv')
+
+# If not found at the configured path, also try the common mount path used in the
+# k8s Job (mounted ConfigMap at /data/rhfd_payments.csv).
+ALT_CSV_PATH = '/data/rhfd_payments.csv'
+if not os.path.exists(PAYMENTS_CSV) and os.path.exists(ALT_CSV_PATH):
+    logger.info(f"PAYMENTS_CSV not found at {PAYMENTS_CSV}; using {ALT_CSV_PATH}")
+    PAYMENTS_CSV = ALT_CSV_PATH
 
 # SQL Schema
 CREATE_TABLES_SQL = """
